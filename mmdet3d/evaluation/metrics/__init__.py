@@ -6,8 +6,9 @@ from .lyft_metric import LyftMetric  # noqa: F401,F403
 from .nuscenes_metric import NuScenesMetric  # noqa: F401,F403
 from .seg_metric import SegMetric  # noqa: F401,F403
 from .waymo_metric import WaymoMetric  # noqa: F401,F403
+from .blade_metric import BladeMetric  # noqa: F401,F403
 
 __all__ = [
     'KittiMetric', 'NuScenesMetric', 'IndoorMetric', 'LyftMetric', 'SegMetric',
-    'InstanceSegMetric', 'WaymoMetric'
+    'InstanceSegMetric', 'WaymoMetric', 'BladeMetric'
 ]
