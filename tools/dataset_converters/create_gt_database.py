@@ -218,6 +218,29 @@ def create_groundtruth_database(dataset_class_name,
                     file_client_args=file_client_args)
             ])
 
+    elif dataset_class_name == 'BladeDataset':
+        file_client_args = dict(backend='disk')
+        dataset_cfg.update(
+            modality=dict(
+                use_lidar=True,
+                use_camera=with_mask,
+            ),
+            data_prefix=dict(
+                pts='training/velodyne_reduced', img='training/image_2'),
+            pipeline=[
+                dict(
+                    type='LoadPointsFromFile',
+                    coord_type='LIDAR',
+                    load_dim=4,
+                    use_dim=4,
+                    file_client_args=file_client_args),
+                dict(
+                    type='LoadAnnotations3D',
+                    with_bbox_3d=True,
+                    with_label_3d=True,
+                    file_client_args=file_client_args)
+            ])
+        
     dataset = DATASETS.build(dataset_cfg)
 
     if database_save_path is None:
@@ -579,6 +602,32 @@ class GTDatabaseCreater:
                         coord_type='LIDAR',
                         load_dim=6,
                         use_dim=6,
+                        file_client_args=file_client_args),
+                    dict(
+                        type='LoadAnnotations3D',
+                        with_bbox_3d=True,
+                        with_label_3d=True,
+                        file_client_args=file_client_args)
+                ])
+
+        elif self.dataset_class_name == 'BladeDataset':
+            file_client_args = dict(backend='disk')
+            dataset_cfg.update(
+                test_mode=False,
+                data_prefix=dict(
+                    pts='training/velodyne_reduced', img='training/image_2'),
+                modality=dict(
+                    use_lidar=True,
+                    use_depth=False,
+                    use_lidar_intensity=True,
+                    use_camera=self.with_mask,
+                ),
+                pipeline=[
+                    dict(
+                        type='LoadPointsFromFile',
+                        coord_type='LIDAR',
+                        load_dim=4,
+                        use_dim=4,
                         file_client_args=file_client_args),
                     dict(
                         type='LoadAnnotations3D',
