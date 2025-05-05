@@ -9,7 +9,7 @@ class_names = ['Blade']
 metainfo = dict(classes=class_names)
 
 point_cloud_range = [0, -39.68, -3, 69.12, 39.68, 1]
-input_modality = dict(use_lidar=True, use_camera=False)
+input_modality = dict(use_lidar=True, use_camera=True)
 
 voxel_size = [0.16, 0.16, 4]
 

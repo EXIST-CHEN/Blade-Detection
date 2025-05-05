@@ -42,7 +42,7 @@
 
     ```shell
     conda create --name openmmlab python=3.8 -y # 使用Conda创建隔离的Python虚拟环境，确保依赖包版本一致。如果要删除当前虚拟环境，可以用 `conda env remove -n openmmlab` 命令
-    conda activate openmmlab # 进入虚拟环境。如果要退出虚拟环境，可以用 `conda deactivate` 命令
+    conda activate openmmlab # 进入虚拟环境，每次打开控制台都需要做！！！如果要退出虚拟环境，可以用 `conda deactivate` 命令
     conda install pytorch==1.8.0 torchvision==0.9.0 cudatoolkit=10.2 -c pytorch # 安装特定版本的 PyTorch 框架以兼容 CUDA 10.2
     pip install numpy==1.23.5 # 测试发现不能安装最新的 numpy 否则会有依赖问题，必须使用 1.23.5 版本
     pip install -U openmim # 安装 min 用于包管理
@@ -164,6 +164,13 @@ mmdetection3d 中，所有的训练都需要配置一个 config，里面定义�
 
 ```shell
 nohup python tools/train.py configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class.py > train.log 2>&1 &
+```
+
+可以通过以下命令监控资源的使用
+
+```shell
+watch -n 1 nvidia-smi # 监控 GPU
+htop # 监控 CPU
 ```
 
 以开发机的性能，跑默认的 80 个 epoch 大约需要 15 小时。训练的实时日志会输出到 `train.log` 中（如果执行失败的话，会包括报错信息），而单次运行的结果会保存在 `work_dirs/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class/` 目录下，里面会有一个 `YYYYMMDD_HHIISS` 目录（执行训练的时间）里面保存了日志，还有一个 `epoch_x.pth` 文件是训练的结果（x为epoch数）。
@@ -317,5 +324,120 @@ aos  AP40:75.00, 68.50, 64.77
   * 困难：最小边界框高度：25 像素，最大遮挡级别：难以看到，最大截断：50%
 
 ## 3. 实际训练
+
+所有代码变更见 [PR](https://github.com/EXIST-CHEN/Blade-Detection/pull/1)，下文只列举需要做什么，不会详细列出代码。
+
+### 3.1. 准备风电叶片数据集适配代码
+
+将风电叶片数据集命名为 Blade。
+
+1. 添加数据集定义
+
+    添加文件 `mmdet3d/datasets/blade_dataset.py`，作为该数据集的定义。
+
+    ```python
+    # 需要将 BladeDataset 注册到 mmdet3d 库里
+    @DATASETS.register_module()
+    class BladeDataset(Det3DDataset):
+        METAINFO = {
+            'classes': ('Blade', ) # 这里，我们只需要一种类型，即风电叶片
+        }
+        # 其他初始化操作
+        ...
+    ```
+
+    然后，将该数据集添加到 `mmdet3d/datasets/__init__.py` 中，并在 `mmdet3d/datasets/convert_utils.py` 中添加对应的处理方法。
+
+2. 添加数据集预处理逻辑
+
+    数据集的预处理是通过 `tools/create_data.py` 进行的，这里需要添加 Blade 数据集的预处理逻辑。
+
+    预处理逻辑的相关代码保存在：
+
+    * `tools/dataset_converters/blade_converter.py`
+    * `tools/dataset_converters/blade_data_utils.py`
+    * `tools/dataset_converters/update_infos_to_v2.py`
+
+    同时，也需要在 `tools/dataset_converters/create_gt_database.py` 中添加对 Blade 数据集的支持。
+
+3. 添加数据集评估逻辑
+
+    配套的评估函数等，都统一写在了 `mmdet3d/evaluation/functional/blade_utils` 目录下，并注册到框架中（`mmdet3d/evaluation/__init__.py`）。
+
+    需要添加 `BladeMetric` 类（`mmdet3d/evaluation/metrics/blade_metric.py`），并将其注册到框架中（`mmdet3d/evaluation/metrics/__init__.py`）。
+
+4. 添加数据集训练配置
+
+    mmdetection3d 中，训练、测试、评估都需要有一个配置，为 Blade 模型也创建了一个配置 `configs/pointpillars/pointpillars_wind-turbine-blade.py`，里面主要定义了数据目录、数据集类型、模型参数、训练流水线、测试流水线、评估流水线等参数。
+
+    ```python
+    dataset_type = 'BladeDataset'
+    data_root = 'data/blade/'
+    class_names = ['Blade']
+    lr = 0.001
+    epoch_num = 80
+    ...
+    model = dict(...)
+    db_sampler = dict(...)
+    train_pipeline = [...]
+    test_pipeline = [...]
+    eval_pipeline = [...]
+    train_dataloader = dict(...)
+    val_dataloader = dict(...)
+    test_dataloader = dict(...)
+    val_evaluator = dict(...)
+    test_evaluator = dict(...)
+    vis_backends = [...]
+    visualizer = dict(...)
+    optim_wrapper = dict(...)
+    param_scheduler = [...]
+    train_cfg = dict(...)
+    val_cfg = dict()
+    test_cfg = dict()
+    auto_scale_lr = dict(...)
+    ```
+
+    至此，风电叶片数据集 Blade 就可以在 mmdetection3d 运行了。在运行之前，需要先准备数据集。
+
+### 3.2. 准备风电叶片数据集
+
+**这一段需要重写**，目前还是用Kitti数据集模拟。
+
+```shell
+mkdir /root/workspace/mmdetection3d/data/blade/
+ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/testing/calib /root/workspace/mmdetection3d/data/blade/testing/calib
+ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/testing/image_2 /root/workspace/mmdetection3d/data/blade/testing/image_2
+ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/testing/velodyne /root/workspace/mmdetection3d/data/blade/testing/velodyne
+ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/calib /root/workspace/mmdetection3d/data/blade/training/calib
+ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/image_2 /root/workspace/mmdetection3d/data/blade/training/image_2
+ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/velodyne /root/workspace/mmdetection3d/data/blade/training/velodyne
+ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/velodyne_reduced /root/workspace/mmdetection3d/data/blade/training/velodyne_reduced
+```
+
+处理label类型，操作后只剩下Blade和DontCare类型
+
+```shell
+cp -rf /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/label_2 /root/workspace/mmdetection3d/data/blade/training/label_2
+find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Car /Blade /g' {} \;
+find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Van/DontCare/g' {} \;
+find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Truck/DontCare/g' {} \;
+find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Pedestrian/DontCare/g' {} \;
+find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Person_sitting/DontCare/g' {} \;
+find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Cyclist/DontCare/g' {} \;
+find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Tram/DontCare/g' {} \;
+find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Misc/DontCare/g' {} \;
+```
+
+```shell
+python tools/create_data.py blade --root-path ./data/blade --out-dir ./data/blade --extra-tag blade
+```
+
+### 3.3. 风电叶片数据集训练
+
+```shell
+nohup python tools/train.py configs/pointpillars/pointpillars_wind-turbine-blade.py > train.log 2>&1 &
+```
+
+### 3.4. 风电叶片数据集测试
 
 Todo
