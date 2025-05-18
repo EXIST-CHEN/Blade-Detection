@@ -16,6 +16,8 @@ kitti_categories = ('Pedestrian', 'Cyclist', 'Car', 'Van', 'Truck',
 
 waymo_categories = ('Car', 'Pedestrian', 'Cyclist')
 
+blade_categories = ('Blade', )
+
 nus_categories = ('car', 'truck', 'trailer', 'bus', 'construction_vehicle',
                   'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone',
                   'barrier')
@@ -313,6 +315,133 @@ def get_kitti_style_2d_boxes(info: dict,
     return repro_recs
 
 
+def get_blade_style_2d_boxes(info: dict,
+                             cam_idx: int = 2,
+                             occluded: Tuple[int] = (0, 1, 2, 3),
+                             annos: Optional[dict] = None,
+                             mono3d: bool = True,
+                             dataset: str = 'blade') -> List[dict]:
+    """Get the 2d / mono3d annotation records for a given info.
+
+    This function is used to get 2D/Mono3D annotations when loading annotations
+    from a blade-style dataset class, such as Blade dataset.
+
+    Args:
+        info (dict): Information of the given sample data.
+        cam_idx (int): Camera id which the 2d / mono3d annotations to obtain
+            belong to. In Blade, typically only CAM 2 will be used,
+            and in Waymo, multi cameras could be used.
+            Defaults to 2.
+        occluded (Tuple[int]): Integer (0, 1, 2, 3) indicating occlusion state:
+            0 = fully visible, 1 = partly occluded, 2 = largely occluded,
+            3 = unknown, -1 = DontCare.
+            Defaults to (0, 1, 2, 3).
+        annos (dict, optional): Original annotations. Defaults to None.
+        mono3d (bool): Whether to get boxes with mono3d annotation.
+            Defaults to True.
+        dataset (str): Dataset name of getting 2d bboxes.
+            Defaults to 'blade'.
+
+    Return:
+        List[dict]: List of 2d / mono3d annotation record that
+        belongs to the input camera id.
+    """
+    # Get calibration information
+    camera_intrinsic = info['calib'][f'P{cam_idx}']
+
+    repro_recs = []
+    # if no annotations in info (test dataset), then return
+    if annos is None:
+        return repro_recs
+
+    # Get all the annotation with the specified visibilties.
+    # filter the annotation bboxes by occluded attributes
+    ann_dicts = annos
+    mask = [(ocld in occluded) for ocld in ann_dicts['occluded']]
+    for k in ann_dicts.keys():
+        ann_dicts[k] = ann_dicts[k][mask]
+
+    # convert dict of list to list of dict
+    ann_recs = []
+    for i in range(len(ann_dicts['occluded'])):
+        ann_rec = {}
+        for k in ann_dicts.keys():
+            ann_rec[k] = ann_dicts[k][i]
+        ann_recs.append(ann_rec)
+
+    for ann_idx, ann_rec in enumerate(ann_recs):
+        # Augment sample_annotation with token information.
+        ann_rec['sample_annotation_token'] = \
+            f"{info['image']['image_idx']}.{ann_idx}"
+        ann_rec['sample_data_token'] = info['image']['image_idx']
+
+        loc = ann_rec['location'][np.newaxis, :]
+        dim = ann_rec['dimensions'][np.newaxis, :]
+        rot = ann_rec['rotation_y'][np.newaxis, np.newaxis]
+
+        # transform the center from [0.5, 1.0, 0.5] to [0.5, 0.5, 0.5]
+        dst = np.array([0.5, 0.5, 0.5])
+        src = np.array([0.5, 1.0, 0.5])
+        # gravity center
+        loc_center = loc + dim * (dst - src)
+        gt_bbox_3d = np.concatenate([loc_center, dim, rot],
+                                    axis=1).astype(np.float32)
+
+        # Filter out the corners that are not in front of the calibrated
+        # sensor.
+        corners_3d = box_np_ops.center_to_corner_box3d(
+            gt_bbox_3d[:, :3],
+            gt_bbox_3d[:, 3:6],
+            gt_bbox_3d[:, 6], (0.5, 0.5, 0.5),
+            axis=1)
+        corners_3d = corners_3d[0].T  # (1, 8, 3) -> (3, 8)
+        in_front = np.argwhere(corners_3d[2, :] > 0).flatten()
+        corners_3d = corners_3d[:, in_front]
+
+        # Project 3d box to 2d.
+        corner_coords = view_points(corners_3d, camera_intrinsic,
+                                    True).T[:, :2].tolist()
+
+        # Keep only corners that fall within the image.
+        final_coords = post_process_coords(
+            corner_coords,
+            imsize=(info['image']['image_shape'][1],
+                    info['image']['image_shape'][0]))
+
+        # Skip if the convex hull of the re-projected corners
+        # does not intersect the image canvas.
+        if final_coords is None:
+            continue
+        else:
+            min_x, min_y, max_x, max_y = final_coords
+
+        # Generate dictionary record to be included in the .json file.
+        repro_rec = generate_record(ann_rec, min_x, min_y, max_x, max_y,
+                                    dataset)
+
+        # If mono3d=True, add 3D annotations in camera coordinates
+        if mono3d and (repro_rec is not None):
+            # use bottom center to represent the bbox_3d
+            repro_rec['bbox_3d'] = np.concatenate(
+                [loc, dim, rot], axis=1).astype(np.float32).squeeze().tolist()
+            repro_rec['velocity'] = -1  # no velocity in Blade
+
+            center_3d = np.array(loc_center).reshape([1, 3])
+            center_2d_with_depth = points_cam2img(
+                center_3d, camera_intrinsic, with_depth=True)
+            center_2d_with_depth = center_2d_with_depth.squeeze().tolist()
+
+            repro_rec['center_2d'] = center_2d_with_depth[:2]
+            repro_rec['depth'] = center_2d_with_depth[2]
+            # normalized center2D + depth
+            # samples with depth < 0 will be removed
+            if repro_rec['depth'] <= 0:
+                continue
+            repro_recs.append(repro_rec)
+
+    return repro_recs
+
+
 def convert_annos(info: dict, cam_idx: int) -> dict:
     """Convert front-cam anns to i-th camera (KITTI-style info)."""
     rect = info['calib']['R0_rect'].astype(np.float32)
@@ -405,6 +534,8 @@ def generate_record(ann_rec: dict, x1: float, y1: float, x2: float, y2: float,
             categories = kitti_categories
         elif dataset == 'waymo':
             categories = waymo_categories
+        elif dataset == 'blade':
+            categories = blade_categories
         else:
             raise NotImplementedError('Unsupported dataset!')
 
