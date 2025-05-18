@@ -317,7 +317,7 @@ aos  AP40:75.00, 68.50, 64.77
 
 * 结果中 easy、moderate、hard 的定义
 
-  KITTI数据集中easy、moderate、hard根据标注框是否被遮挡、遮挡程度和框的高度进行定义的，具体数据如下：
+  KITTI 数据集中 easy、moderate、hard 根据标注框是否被遮挡、遮挡程度和框的高度进行定义的，具体数据如下：
   
   * 简单：最小边界框高度：40 像素，最大遮挡级别：完全可见，最大截断：15%
   * 中等：最小边界框高度：25 像素，最大遮挡水平：部分遮挡，最大截断：30%
@@ -401,43 +401,341 @@ aos  AP40:75.00, 68.50, 64.77
 
 ### 3.2. 准备风电叶片数据集
 
-**这一段需要重写**，目前还是用Kitti数据集模拟。
+将原始数据保存到 `.vscode/raw_blade_data`，目录下的文件为：
 
-```shell
-mkdir /root/workspace/mmdetection3d/data/blade/
-ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/testing/calib /root/workspace/mmdetection3d/data/blade/testing/calib
-ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/testing/image_2 /root/workspace/mmdetection3d/data/blade/testing/image_2
-ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/testing/velodyne /root/workspace/mmdetection3d/data/blade/testing/velodyne
-ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/calib /root/workspace/mmdetection3d/data/blade/training/calib
-ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/image_2 /root/workspace/mmdetection3d/data/blade/training/image_2
-ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/velodyne /root/workspace/mmdetection3d/data/blade/training/velodyne
-ln -s /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/velodyne_reduced /root/workspace/mmdetection3d/data/blade/training/velodyne_reduced
+```text
+mmdetection3d
+├── .vscode
+│   ├── raw_blade_data
+│   │   ├── image
+│   │   │   ├── xxxxxx.xxxxx.jpg
+│   │   ├── pointcloud
+│   │   │   ├── 2001
+│   │   │   │   ├── xxxxxx.xxxxx.pcd
+│   │   │   ├── 4001
+│   │   │   │   ├── xxxxxx.xxxxx.pcd
+│   │   │   ├── 5001
+│   │   │   │   ├── xxxxxx.xxxxx.pcd
+│   │   │   ├── rslidar
+│   │   │   │   ├── xxxxxx.xxxxx.pcd
 ```
 
-处理label类型，操作后只剩下Blade和DontCare类型
+需要对这些数据进行处理，使其满足 KITTI 数据集格式，便于被 mmdetection3d 框架加载并进行训练。
+
+#### 3.2.1. 对图像数据进行打标处理
+
+目标：生成 `.vscode/raw_blade_data/processed/image_2` 和 `.vscode/raw_blade_data/processed/label_2` 目录。
+
+处理逻辑：见 `blade_data_process/process_images.py`，需要将 jpg 转换为 png 格式。
+
+```python
+from pathlib import Path
+from PIL import Image
+
+# 定义源目录和目标目录
+source_dir = Path('.vscode/raw_blade_data/image')
+image_2_dir = Path('.vscode/raw_blade_data/training/image_2')
+label_2_dir = Path('.vscode/raw_blade_data/training/label_2')
+
+# 确保目标目录存在
+image_2_dir.mkdir(parents=True, exist_ok=True)
+label_2_dir.mkdir(parents=True, exist_ok=True)
+
+# 遍历源目录中的所有 .jpg 文件
+for file in source_dir.iterdir():
+    if file.is_file() and file.suffix.lower() == '.jpg':
+        # 构建目标 PNG 文件路径
+        png_file = image_2_dir / (file.stem + '.png')
+
+        # 使用 Pillow 打开并保存为 PNG 格式
+        with Image.open(file) as img:
+            img.save(png_file, format='PNG')
+
+        # 在 label_2 目录下创建同名的 .txt 文件（去掉后缀）
+        txt_file = label_2_dir / (file.stem + '.txt')
+        txt_file.touch(exist_ok=True)  # 创建空文件，若已存在则不修改
+
+print("图片转换和空标签文件生成完成。")
+
+```
+
+对 `.vscode/raw_blade_data/processed/label_2` 目录下的文件进行手动标注。label 每行包含 15 个字段，用空格隔开，依次的含义如下：
+
+| 字段   | 名称                                         | 类型           | 说明                                                                 |
+| ----- | -------------------------------------------- | ------------- | ------------------------------------------------------------------- |
+| 1     | type                                         | string        | 物体类别，本场景只有 Blade                                             |
+| 2     | truncated                                    | float [0,1]   | 截断程度，表示目标是否部分超出图像边界（0 表示完整可见），本场景均为 0          |
+| 3     | occluded                                     | int [0,4]     | 遮挡程度，0=未遮挡，1=部分遮挡，2=大部分遮挡，3=完全遮挡，4=未知，本场景均为 0 |
+| 4     | alpha                                        | float [-π, π] | 观测角度（rad），即目标中心与相机光轴之间的角度（用于估计方向）                |
+| 5-8   | bbox_left, bbox_top, bbox_right, bbox_bottom | float         | 2D 边界框坐标（像素），表示目标在图像中的矩形区域                            |
+| 9-11  | h, w, l                                      | float         | 3D 尺寸（米），分别表示物体的高度（height）、宽度（width）、长度（length）      |
+| 12-14 | x, y, z                                      | float         | 3D 位置（米），表示物体在相机坐标系下的中心坐标（x 向右，y 向下，z 向前）       |
+| 15    | ry                                           | float [-π, π] | 绕 y 轴旋转角度（rad），表示物体的朝向（yaw）                              |
+
+手动标注前，可以预写入模版。
 
 ```shell
-cp -rf /root/workspace/mmdetection3d/.vscode/OpenDataLab___KITTI_Object/raw/training/label_2 /root/workspace/mmdetection3d/data/blade/training/label_2
-find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Car /Blade /g' {} \;
-find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Van/DontCare/g' {} \;
-find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Truck/DontCare/g' {} \;
-find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Pedestrian/DontCare/g' {} \;
-find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Person_sitting/DontCare/g' {} \;
-find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Cyclist/DontCare/g' {} \;
-find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Tram/DontCare/g' {} \;
-find data/blade/training/label_2 -type f -name "*.txt" -exec sed -i 's/Misc/DontCare/g' {} \;
+python blade_data_process/write_template.py .vscode/raw_blade_data/processed/label_2 "Blade 0.00 0 0.52 0.00 <bbox_top> 640.00 <bbox_bottom> 30.00 0.10 2.00 <x> <y> <z> <ry>
+" -y
 ```
+
+#### 3.2.2. 对雷达数据进行打标处理
+
+目标：生成 `.vscode/raw_blade_data/processed/velodyne_reduced` 和 `.vscode/raw_blade_data/processed/calib` 目录。
+
+处理逻辑：见 `blade_data_process/process_lidar.py`。
+
+```python
+from pathlib import Path
+import open3d as o3d
+import numpy as np
+
+# 定义路径
+source_dir = Path('.vscode/raw_blade_data/pointcloud/rslidar')
+velodyne_dir = Path('.vscode/raw_blade_data/training/velodyne')
+velodyne_reduced_dir = Path('.vscode/raw_blade_data/training/velodyne_reduced')
+calib_dir = Path('.vscode/raw_blade_data/training/calib')
+
+# 创建目标目录
+velodyne_dir.mkdir(parents=True, exist_ok=True)
+velodyne_reduced_dir.mkdir(parents=True, exist_ok=True)
+calib_dir.mkdir(parents=True, exist_ok=True)
+
+# 设置降采样参数
+voxel_size = 0.1  # 可根据实际点云密度调整
+
+# 遍历所有 .pcd 文件
+for pcd_file in source_dir.glob('*.pcd'):
+    if pcd_file.is_file():
+        print(f"处理文件：{pcd_file.name}")
+
+        # 读取点云
+        pcd = o3d.io.read_point_cloud(str(pcd_file))
+
+        # 移除无效点（NaN / Inf）
+        pcd.remove_non_finite_points()
+
+        # 原始点云保存为 BIN（包含所有字段）
+        points = np.asarray(pcd.points)
+        if pcd.has_colors():
+            colors = np.asarray(pcd.colors)
+            points = np.hstack((points, colors))
+        elif pcd.has_normals():
+            normals = np.asarray(pcd.normals)
+            points = np.hstack((points, normals))
+
+        # 保存原始点云到 velodyne 目录
+        bin_file_velodyne = velodyne_dir / (pcd_file.stem + '.bin')
+        points.astype(np.float32).tofile(str(bin_file_velodyne))
+        print(f"原始点数：{points.shape[0]}")
+
+        # 降采样处理
+        pcd_downsampled = pcd.voxel_down_sample(voxel_size=voxel_size)
+
+        # 检查降采样后是否为空
+        if len(pcd_downsampled.points) == 0:
+            print(f"警告：{pcd_file.name} 降采样后无有效点，跳过保存。")
+            continue
+
+        # 仅保留 xyz 字段
+        points_reduced = np.asarray(pcd_downsampled.points)
+
+        # 保存降采样后的点云到 velodyne_reduced 目录（仅 xyz）
+        bin_file_reduced = velodyne_reduced_dir / (pcd_file.stem + '.bin')
+        points_reduced.astype(np.float32).tofile(str(bin_file_reduced))
+        print(f"降采样后点数：{points_reduced.shape[0]}")
+
+        # 生成空的 calib 文件
+        txt_file = calib_dir / (pcd_file.stem + '.txt')
+        txt_file.touch(exist_ok=True)
+```
+
+对 `.vscode/raw_blade_data/processed/calib` 目录下的文件进行手动标注。calib 的数据格式如下：
+
+* 相机内参矩阵（P0 - P3）：每个相机对应一个 3x4 的投影矩阵，用于将 3D 点（相机坐标系）投影到 2D 图像坐标系。
+* 矫正旋转矩阵（R0_rect）：用于将点从原始相机坐标系转换到矫正后的相机坐标系（去除镜头畸变）。
+* LiDAR 到相机的坐标变换（Tr_velo_to_cam）：将点从激光雷达坐标系（Velodyne）转换到相机坐标系。
+* IMU 到 LiDAR 的坐标变换（Tr_imu_to_velo）：将点从 IMU 坐标系转换到激光雷达坐标系。
+
+手动标注前，可以预写入模版。
+
+```shell
+python blade_data_process/write_template.py .vscode/raw_blade_data/processed/calib "P0: 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 0.000000000000e+00
+P1: 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 0.000000000000e+00
+P2: 505.603861 0.000000 312.618312 0.000000  505.845117 239.323011 1.805066000000e+02 -3.454157000000e-01 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 4.981016000000e-03
+P3: 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 0.000000000000e+00
+R0_rect: 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00
+Tr_velo_to_cam:  -1.397395e-01 1.587947e-01 9.773725e-01 1.057611e+00 -8.245766e-01 -5.651492e-01 -2.607322e-02 -1.016234e+00 5.482210e-01 -8.095620e-01 2.099121e-01 -2.244096e-01
+Tr_imu_to_velo: 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 0.000000000000e+00 1.000000000000e+00 0.000000000000e+00
+" -y
+```
+
+#### 3.2.3. 预处理数据集
+
+由于雷达帧数小于相机，所以雷达数据量小于图片数据量，需要以雷达为基准，找出时间最接近的照片，并统一重命名，保存到 `data/blade/training` 目录下，然后生成 `.vscode/raw_blade_data/testing` 和 `.vscode/raw_blade_data/ImageSets` 目录，并执行脚本进行预处理：
+
+```shell
+python /root/workspace/mmdetection3d/blade_data_process/gen_dataset.py
+```
+
+处理后的label结果如下：
+
+```shell
+lrwxrwxrwx 1 root root   95 May  6 21:14 000000.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657003.487303495.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000001.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657003.588418484.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000002.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657003.688452244.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000003.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657003.788029671.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000004.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657003.887953520.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000005.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657003.988467455.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000006.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.089075327.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000007.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.187564611.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000008.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.287853003.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000009.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.387794256.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000010.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.489051104.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000011.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.589433193.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000012.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.688311577.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000013.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.787743807.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000014.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.883780479.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000015.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657004.983843565.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000016.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.083053589.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000017.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.184194803.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000018.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.284075260.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000019.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.384202003.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000020.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.484170437.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000021.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.584133625.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000022.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.684117079.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000023.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.784183741.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000024.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.884112835.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000025.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657005.984099627.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000026.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.083811998.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000027.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.183945656.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000028.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.283957005.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000029.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.384624004.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000030.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.483367920.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000031.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.584029198.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000032.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.684156895.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000033.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.784188509.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000034.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.884016275.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000035.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657006.984391689.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000036.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.084037304.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000037.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.184182644.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000038.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.283647776.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000039.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.383998156.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000040.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.484052181.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000041.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.583975792.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000042.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.683998346.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000043.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.784032106.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000044.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.883947134.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000045.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657007.984000683.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000046.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.083625793.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000047.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.184366226.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000048.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.284256935.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000049.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.383749962.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000050.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.483786106.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000051.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.583900690.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000052.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.683707237.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000053.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.783722401.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000054.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.883769274.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000055.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657008.984468937.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000056.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.083858013.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000057.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.183685303.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000058.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.283723116.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000059.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.382873297.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000060.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.484683037.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000061.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.584045172.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000062.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.684025288.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000063.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.783355951.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000064.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.884117603.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000065.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657009.984089136.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000066.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657010.084163427.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000067.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657010.184420586.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000068.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657010.284574986.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000069.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657010.383899212.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000070.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657010.483991861.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000071.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657010.583942175.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000072.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657010.683344126.txt
+lrwxrwxrwx 1 root root   95 May  6 21:14 000073.txt -> /root/workspace/mmdetection3d/.vscode/raw_blade_data/processed/label_2/1731657010.784007072.txt
+```
+
+预处理数据：
 
 ```shell
 python tools/create_data.py blade --root-path ./data/blade --out-dir ./data/blade --extra-tag blade
 ```
 
+处理完成之后的 `/root/workspace/mmdetection3d/data/blade` 目录如下：
+
+```text
+blade
+├── blade_gt_database
+│   ├── xxxxx.bin
+├── ImageSets
+│   ├── test.txt
+│   ├── train.txt
+│   ├── trainval.txt
+│   ├── val.txt
+├── testing
+│   ├── calib
+│   ├── image_2
+│   ├── velodyne_reduced
+├── training
+│   ├── calib
+│   ├── image_2
+│   ├── label_2
+│   ├── velodyne_reduced
+├── blade_dbinfos_train.pkl
+├── blade_infos_test.pkl
+├── blade_infos_train.pkl
+├── blade_infos_trainval.pkl
+├── blade_infos_val.pkl
+```
+
 ### 3.3. 风电叶片数据集训练
+
+使用 5.4.1 节改造后的 MMDetection3D 框架，对预处理后的 Blade 数据集进行训练：
 
 ```shell
 nohup python tools/train.py configs/pointpillars/pointpillars_wind-turbine-blade.py > train.log 2>&1 &
 ```
 
+由于使用KITTI数据集测试时，估算出了开发机的性能上限，根据预估值调整了训练的 batch_size 和 num_workers， 故训练过程可以看到，GPU的性能利用率达到了接近100%，可以更高效地训练模型。
+
+![alt text](05d5d81871bd7733c316e1ef50dd8a3.png)
+
+在训练过程中，MMDetection3D 框架会给出预计的训练完成时间和当前的梯度、损失值等。下图是训练过程的截图，可以看到当前运行的是第9个epoch，预计剩余时间是12小时40分钟左右，梯度已经较低，loss也收敛到较低水平。
+
+![alt text](image.png)
+
+Blade 数据集在经过了80个epoch，大约15小时的训练后，得到了较好的性能。
+
 ### 3.4. 风电叶片数据集测试
 
-Todo
+结果如下：
+
+```text
+----------- AP11 Results ------------
+
+Blade AP11@0.70, 0.70, 0.70:
+bbox AP11:90.7776, 89.4898, 86.1475
+bev  AP11:88.7656, 85.7175, 78.7043
+3d   AP11:85.7989, 76.1519, 72.8707
+aos  AP11:90.71, 89.16, 85.58
+Blade AP11@0.70, 0.50, 0.50:
+bbox AP11:90.7776, 89.4898, 86.1475
+bev  AP11:89.9512, 88.9486, 88.1642
+3d   AP11:89.9512, 88.8362, 87.9556
+aos  AP11:90.71, 89.16, 85.58
+
+----------- AP40 Results ------------
+
+Blade AP40@0.70, 0.70, 0.70:
+bbox AP40:95.8777, 92.2285, 87.5594
+bev  AP40:91.0857, 86.8972, 82.4981
+3d   AP40:86.8003, 77.3468, 73.0951
+aos  AP40:95.78, 91.86, 86.97
+Blade AP40@0.70, 0.50, 0.50:
+bbox AP40:95.8777, 92.2285, 87.5594
+bev  AP40:94.7470, 93.4893, 90.6973
+3d   AP40:94.7412, 93.1625, 88.8195
+aos  AP40:95.78, 91.86, 86.97
+```

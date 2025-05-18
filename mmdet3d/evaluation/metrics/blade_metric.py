@@ -35,7 +35,7 @@ class BladeMetric(BaseMetric):
             the file path and the prefix of filename, e.g., "a/b/prefix".
             If not specified, a temp file will be created. Default: None.
         default_cam_key (str, optional): The default camera for lidar to
-            camear conversion. By default, KITTI: CAM2, Waymo: CAM_FRONT
+            camear conversion. By default, Blade: CAM2, Waymo: CAM_FRONT
         format_only (bool): Format the output results without perform
             evaluation. It is useful when you want to format the result
             to a specific format and submit it to the test server.
@@ -225,7 +225,7 @@ class BladeMetric(BaseMetric):
                        metric: str = None,
                        classes: List[str] = None,
                        logger: MMLogger = None) -> dict:
-        """Evaluation in KITTI protocol.
+        """Evaluation in Blade protocol.
 
         Args:
             results_dict (dict): Formatted results of the dataset.
@@ -336,13 +336,15 @@ class BladeMetric(BaseMetric):
         Returns:
             list[dict]: A list of dictionaries with the blade format.
         """
+        print(len(net_outputs),net_outputs[0])
+        print(len(self.data_infos),self.data_infos[0])
         assert len(net_outputs) == len(self.data_infos), \
             'invalid list length of network outputs'
         if submission_prefix is not None:
             mmengine.mkdir_or_exist(submission_prefix)
 
         det_annos = []
-        print('\nConverting 3D prediction to KITTI format')
+        print('\nConverting 3D prediction to Blade format')
         for idx, pred_dicts in enumerate(
                 mmengine.track_iter_progress(net_outputs)):
             annos = []
@@ -408,25 +410,21 @@ class BladeMetric(BaseMetric):
                 }
                 annos.append(anno)
 
-            if submission_prefix is not None:
-                curr_file = f'{submission_prefix}/{sample_idx:06d}.txt'
-                with open(curr_file, 'w') as f:
-                    bbox = anno['bbox']
-                    loc = anno['location']
-                    dims = anno['dimensions']  # lhw -> hwl
-
-                    for idx in range(len(bbox)):
-                        print(
-                            '{} -1 -1 {:.4f} {:.4f} {:.4f} {:.4f} '
-                            '{:.4f} {:.4f} {:.4f} '
-                            '{:.4f} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f}'.format(
-                                anno['name'][idx], anno['alpha'][idx],
-                                bbox[idx][0], bbox[idx][1], bbox[idx][2],
-                                bbox[idx][3], dims[idx][1], dims[idx][2],
-                                dims[idx][0], loc[idx][0], loc[idx][1],
-                                loc[idx][2], anno['rotation_y'][idx],
-                                anno['score'][idx]),
-                            file=f)
+            # if submission_prefix is not None:
+            #     curr_file = f'{submission_prefix}/{sample_idx:06d}.txt'
+            #     with open(curr_file, 'w') as f:
+            bbox = anno['bbox']
+            loc = anno['location']
+            dims = anno['dimensions']  # lhw -> hwl
+            print(idx,anno)
+            for idx in range(len(bbox)):
+                print('{} -1 -1 {:.4f} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f} {:.4f}'.format(
+                        anno['name'][idx], anno['alpha'][idx],
+                        bbox[idx][0], bbox[idx][1], bbox[idx][2],
+                        bbox[idx][3], dims[idx][1], dims[idx][2],
+                        dims[idx][0], loc[idx][0], loc[idx][1],
+                        loc[idx][2], anno['rotation_y'][idx],
+                        anno['score'][idx]))
 
             annos[-1]['sample_id'] = np.array(
                 [sample_idx] * len(annos[-1]['score']), dtype=np.int64)
@@ -468,7 +466,7 @@ class BladeMetric(BaseMetric):
         assert len(net_outputs) == len(self.data_infos), \
             'invalid list length of network outputs'
         det_annos = []
-        print('\nConverting 2D prediction to KITTI format')
+        print('\nConverting 2D prediction to Blade format')
         for i, bboxes_per_sample in enumerate(
                 mmengine.track_iter_progress(net_outputs)):
             annos = []
@@ -535,7 +533,7 @@ class BladeMetric(BaseMetric):
         if submission_prefix is not None:
             # save file in submission format
             mmengine.mkdir_or_exist(submission_prefix)
-            print(f'Saving KITTI submission to {submission_prefix}')
+            print(f'Saving Blade submission to {submission_prefix}')
             for i, anno in enumerate(det_annos):
                 sample_idx = sample_id_list[i]
                 cur_det_file = f'{submission_prefix}/{sample_idx:06d}.txt'
